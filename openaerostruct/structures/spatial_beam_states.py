@@ -32,7 +32,13 @@ class SpatialBeamStates(om.Group):
             self.add_subsystem(
                 "fuel_loads",
                 FuelLoads(surface=surface),
-                promotes_inputs=["nodes", "load_factor", "fuel_vols", "fuel_mass"],
+                promotes_inputs=[
+                    "nodes",
+                    "load_factor",
+                    "fuel_vols",
+                    "fuel_mass",
+                    "wing_fuel_fraction",
+                ],
                 promotes_outputs=["fuel_weight_loads"],
             )
             promotes.append("fuel_weight_loads")
@@ -41,7 +47,12 @@ class SpatialBeamStates(om.Group):
             self.add_subsystem(
                 "point_masses",
                 ComputePointMassLoads(surface=surface),
-                promotes_inputs=["point_mass_locations", "point_masses", "nodes", "load_factor"],
+                promotes_inputs=[
+                    "point_mass_locations",
+                    "point_masses",
+                    "nodes",
+                    "load_factor",
+                ],
                 promotes_outputs=["loads_from_point_masses"],
             )
             promotes.append("loads_from_point_masses")
@@ -62,9 +73,16 @@ class SpatialBeamStates(om.Group):
         )
 
         self.add_subsystem(
-            "create_rhs", CreateRHS(surface=surface), promotes_inputs=["total_loads"], promotes_outputs=["forces"]
+            "create_rhs",
+            CreateRHS(surface=surface),
+            promotes_inputs=["total_loads"],
+            promotes_outputs=["forces"],
         )
 
-        self.add_subsystem("fem", FEM(surface=surface), promotes_inputs=["*"], promotes_outputs=["*"])
+        self.add_subsystem(
+            "fem", FEM(surface=surface), promotes_inputs=["*"], promotes_outputs=["*"]
+        )
 
-        self.add_subsystem("disp", Disp(surface=surface), promotes_inputs=["*"], promotes_outputs=["*"])
+        self.add_subsystem(
+            "disp", Disp(surface=surface), promotes_inputs=["*"], promotes_outputs=["*"]
+        )
