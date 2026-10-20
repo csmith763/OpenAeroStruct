@@ -97,7 +97,21 @@ class SectionPropertiesWingbox(om.ExplicitComponent):
         self.add_output("hfront", val=np.ones((self.ny - 1)), units="m")
         self.add_output("hrear", val=np.ones((self.ny - 1)), units="m")
 
-        self.declare_partials("*", "*", method="cs")
+        # Every output segment depends only on the same-index input segment, so
+        # all Jacobians are diagonal.
+        arange = np.arange(self.ny - 1)
+        outs = ["A", "A_enc", "A_int", "Iy", "Qz", "Iz", "J", "htop", "hbottom", "hfront", "hrear"]
+        ins = [
+            "streamwise_chords",
+            "fem_chords",
+            "fem_twists",
+            "spar_thickness",
+            "skin_thickness",
+            "t_over_c",
+        ]
+        for o in outs:
+            for j in ins:
+                self.declare_partials(o, j, rows=arange, cols=arange)
 
     def compute(self, inputs, outputs):
         # NOTE: In the code below, the x- and y-axes correspond to the element
@@ -330,3 +344,285 @@ class SectionPropertiesWingbox(om.ExplicitComponent):
         outputs["hbottom"] = hbottom
         outputs["hfront"] = hfront
         outputs["hrear"] = hrear
+
+    def compute_partials(self, inputs, partials):
+        # Analytic partials via forward-mode (tangent) propagation. Each output
+        # segment depends only on the same-index input segment, so the Jacobians
+        # are diagonal. We propagate a unit "seed" through the exact sequence of
+        # operations in ``compute`` once per input, giving the diagonal entries.
+        toc_orig = self.orig_wb_af_t_over_c
+        Xu0 = np.real(self.data_x_upper)
+        Xl0 = np.real(self.data_x_lower)
+        Yu0 = np.real(self.data_y_upper)
+        Yl0 = np.real(self.data_y_lower)
+
+        chord = inputs["fem_chords"]
+        st = inputs["spar_thickness"]
+        sk = inputs["skin_thickness"]
+        toc = inputs["t_over_c"]
+        swc = inputs["streamwise_chords"]
+        theta = inputs["fem_twists"]
+
+        ks_rho = 500.0
+
+        def _cubic_d(a, d_a, b, d_b, x2, d_x2):
+            # derivative of 2*(a^3 x2^4/12 + a^2 x2^3 b/3 + a x2^2 b^2/2 + b^3 x2/3)
+            return 2.0 * (
+                1.0 / 12.0 * (3.0 * a**2 * d_a * x2**4 + a**3 * 4.0 * x2**3 * d_x2)
+                + 1.0 / 3.0 * (2.0 * a * d_a * x2**3 * b + a**2 * 3.0 * x2**2 * d_x2 * b + a**2 * x2**3 * d_b)
+                + 1.0 / 2.0 * (d_a * x2**2 * b**2 + a * 2.0 * x2 * d_x2 * b**2 + a * x2**2 * 2.0 * b * d_b)
+                + 1.0 / 3.0 * (3.0 * b**2 * d_b * x2 + b**3 * d_x2)
+            )
+
+        def fwd(dchord, dst, dsk, dtoc, dswc, dtheta):
+            # ----- scaled coordinates (pre-rotation) -----
+            sc = swc / chord
+            d_sc = (dswc * chord - swc * dchord) / chord**2
+            scaleY = (toc / toc_orig) * sc
+            d_scaleY = (dtoc / toc_orig) * sc + (toc / toc_orig) * d_sc
+
+            Xu = np.outer(Xu0, chord)
+            d_Xu = np.outer(Xu0, dchord)
+            Xl = np.outer(Xl0, chord)
+            d_Xl = np.outer(Xl0, dchord)
+            bYu = np.outer(Yu0, chord)
+            d_bYu = np.outer(Yu0, dchord)
+            bYl = np.outer(Yl0, chord)
+            d_bYl = np.outer(Yl0, dchord)
+            Yu = bYu * scaleY
+            d_Yu = d_bYu * scaleY + bYu * d_scaleY
+            Yl = bYl * scaleY
+            d_Yl = d_bYl * scaleY + bYl * d_scaleY
+
+            # ----- A_enc, A_int, p_by_t, J (pre-rotation) -----
+            xud, d_xud = Xu[1:] - Xu[:-1], d_Xu[1:] - d_Xu[:-1]
+            xld, d_xld = Xl[1:] - Xl[:-1], d_Xl[1:] - d_Xl[:-1]
+            yud, d_yud = Yu[1:] - Yu[:-1], d_Yu[1:] - d_Yu[:-1]
+            yld, d_yld = Yl[1:] - Yl[:-1], d_Yl[1:] - d_Yl[:-1]
+            yua, d_yua = Yu[1:] + Yu[:-1], d_Yu[1:] + d_Yu[:-1]
+            yla, d_yla = Yl[1:] + Yl[:-1], d_Yl[1:] + d_Yl[:-1]
+
+            d_Aenc = np.sum(d_xud * (yua - sk) / 2 + xud * (d_yua - dsk) / 2, axis=0) + np.sum(
+                d_xld * (-yla - sk) / 2 + xld * (-d_yla - dsk) / 2, axis=0
+            )
+            d_Aint = np.sum(d_xud * (yua - 2 * sk) / 2 + xud * (d_yua - 2 * dsk) / 2, axis=0) + np.sum(
+                d_xld * (-yla - 2 * sk) / 2 + xld * (-d_yla - 2 * dsk) / 2, axis=0
+            )
+            # spar area removals
+            d_Aenc = d_Aenc - ((d_Yu[0] - d_Yl[0]) * st + (Yu[0] - Yl[0]) * dst) / 2
+            d_Aenc = d_Aenc - ((d_Yu[-1] - d_Yl[-1]) * st + (Yu[-1] - Yl[-1]) * dst) / 2
+            d_Aint = d_Aint - ((d_Yu[0] - d_Yl[0]) * st + (Yu[0] - Yl[0]) * dst)
+            d_Aint = d_Aint - ((d_Yu[-1] - d_Yl[-1]) * st + (Yu[-1] - Yl[-1]) * dst)
+
+            # values needed for J
+            Aenc = np.sum(xud * (yua - sk) / 2, axis=0) + np.sum(xld * (-yla - sk) / 2, axis=0)
+            Aenc = Aenc - (Yu[0] - Yl[0]) * st / 2 - (Yu[-1] - Yl[-1]) * st / 2
+
+            s1 = np.sqrt(xud**2 + yud**2)
+            d_s1 = (xud * d_xud + yud * d_yud) / s1
+            s2 = np.sqrt(xld**2 + yld**2)
+            d_s2 = (xld * d_xld + yld * d_yld) / s2
+            pbt = np.sum(s1 / sk + s2 / sk, axis=0)
+            d_pbt = np.sum((d_s1 * sk - s1 * dsk) / sk**2 + (d_s2 * sk - s2 * dsk) / sk**2, axis=0)
+            pbt = pbt + (Yu[0] - Yl[0] - sk) / st + (Yu[-1] - Yl[-1] - sk) / st
+            d_pbt = d_pbt + ((d_Yu[0] - d_Yl[0] - dsk) * st - (Yu[0] - Yl[0] - sk) * dst) / st**2
+            d_pbt = d_pbt + ((d_Yu[-1] - d_Yl[-1] - dsk) * st - (Yu[-1] - Yl[-1] - sk) * dst) / st**2
+
+            d_J = 4.0 * (2.0 * Aenc * d_Aenc * pbt - Aenc**2 * d_pbt) / pbt**2
+
+            # ----- rotation by fem_twists (matches compute: np.cos/np.sin of raw value) -----
+            cos = np.cos(theta)
+            sin = np.sin(theta)
+            dcos = -sin * dtheta
+            dsin = cos * dtheta
+
+            RXu = cos * Xu + sin * Yu
+            d_RXu = dcos * Xu + cos * d_Xu + dsin * Yu + sin * d_Yu
+            RYu = -sin * Xu + cos * Yu
+            d_RYu = -dsin * Xu - sin * d_Xu + dcos * Yu + cos * d_Yu
+            RXl = cos * Xl + sin * Yl
+            d_RXl = dcos * Xl + cos * d_Xl + dsin * Yl + sin * d_Yl
+            RYl = -sin * Xl + cos * Yl
+            d_RYl = -dsin * Xl - sin * d_Xl + dcos * Yl + cos * d_Yl
+
+            Xud, d_Xud = RXu[1:] - RXu[:-1], d_RXu[1:] - d_RXu[:-1]
+            Xld, d_Xld = RXl[1:] - RXl[:-1], d_RXl[1:] - d_RXl[:-1]
+            Yud, d_Yud = RYu[1:] - RYu[:-1], d_RYu[1:] - d_RYu[:-1]
+            Yld, d_Yld = RYl[1:] - RYl[:-1], d_RYl[1:] - d_RYl[:-1]
+            Yua, d_Yua = RYu[1:] + RYu[:-1], d_RYu[1:] + d_RYu[:-1]
+            Yla, d_Yla = RYl[1:] + RYl[:-1], d_RYl[1:] + d_RYl[:-1]
+
+            # ----- area and centroid -----
+            uarea = sk * Xud
+            d_uarea = dsk * Xud + sk * d_Xud
+            larea = sk * Xld
+            d_larea = dsk * Xld + sk * d_Xld
+            hfs = RYu[0] - RYl[0] - 2 * sk
+            d_hfs = d_RYu[0] - d_RYl[0] - 2 * dsk
+            hrs = RYu[-1] - RYl[-1] - 2 * sk
+            d_hrs = d_RYu[-1] - d_RYl[-1] - 2 * dsk
+            area_spars = (hfs + hrs) * st
+            d_area_spars = (d_hfs + d_hrs) * st + (hfs + hrs) * dst
+            area = np.sum(uarea, axis=0) + np.sum(larea, axis=0) + area_spars
+            d_area = np.sum(d_uarea, axis=0) + np.sum(d_larea, axis=0) + d_area_spars
+
+            fmau = (Yua / 2 - sk / 2) * sk * Xud
+            d_fmau = (
+                (d_Yua / 2 - dsk / 2) * sk * Xud
+                + (Yua / 2 - sk / 2) * dsk * Xud
+                + (Yua / 2 - sk / 2) * sk * d_Xud
+            )
+            fmal = (Yla / 2 + sk / 2) * sk * Xld
+            d_fmal = (
+                (d_Yla / 2 + dsk / 2) * sk * Xld
+                + (Yla / 2 + sk / 2) * dsk * Xld
+                + (Yla / 2 + sk / 2) * sk * d_Xld
+            )
+            cf0 = (RYu[0] + RYl[0]) / 2
+            d_cf0 = (d_RYu[0] + d_RYl[0]) / 2
+            cr0 = (RYu[-1] + RYl[-1]) / 2
+            d_cr0 = (d_RYu[-1] + d_RYl[-1]) / 2
+            fmafs = hfs * st * cf0
+            d_fmafs = (d_hfs * st + hfs * dst) * cf0 + hfs * st * d_cf0
+            fmars = hrs * st * cr0
+            d_fmars = (d_hrs * st + hrs * dst) * cr0 + hrs * st * d_cr0
+
+            num_c = np.sum(fmau, axis=0) + np.sum(fmal, axis=0) + fmafs + fmars
+            d_num_c = np.sum(d_fmau, axis=0) + np.sum(d_fmal, axis=0) + d_fmafs + d_fmars
+            centroid = num_c / area
+            d_centroid = (d_num_c * area - num_c * d_area) / area**2
+
+            # ----- Iz (upward bending) -----
+            a = Yud / Xud
+            d_a = (d_Yud * Xud - Yud * d_Xud) / Xud**2
+            b = (Yud + sk) / 2
+            d_b = (d_Yud + dsk) / 2
+            d_Iz = np.sum(_cubic_d(a, d_a, b, d_b, Xud, d_Xud), axis=0)
+            t = Yua / 2 - sk / 2 - centroid
+            d_t = d_Yua / 2 - dsk / 2 - d_centroid
+            d_Iz = d_Iz + np.sum(
+                d_Xud * sk * t**2 + Xud * dsk * t**2 + Xud * sk * 2 * t * d_t, axis=0
+            )
+            # lower
+            a = -Yld / Xld
+            d_a = -(d_Yld * Xld - Yld * d_Xld) / Xld**2
+            b = (-Yld + sk) / 2
+            d_b = (-d_Yld + dsk) / 2
+            d_Iz = d_Iz + np.sum(_cubic_d(a, d_a, b, d_b, Xld, d_Xld), axis=0)
+            tl = -Yla / 2 - sk / 2 + centroid
+            d_tl = -d_Yla / 2 - dsk / 2 + d_centroid
+            d_Iz = d_Iz + np.sum(
+                d_Xld * sk * tl**2 + Xld * dsk * tl**2 + Xld * sk * 2 * tl * d_tl, axis=0
+            )
+            # spars
+            cf = cf0 - centroid
+            d_cf = d_cf0 - d_centroid
+            d_Iz = d_Iz + (
+                1.0 / 12.0 * (dst * hfs**3 + st * 3 * hfs**2 * d_hfs)
+                + dst * hfs * cf**2
+                + st * d_hfs * cf**2
+                + st * hfs * 2 * cf * d_cf
+            )
+            cr = cr0 - centroid
+            d_cr = d_cr0 - d_centroid
+            d_Iz = d_Iz + (
+                1.0 / 12.0 * (dst * hrs**3 + st * 3 * hrs**2 * d_hrs)
+                + dst * hrs * cr**2
+                + st * d_hrs * cr**2
+                + st * hrs * 2 * cr * d_cr
+            )
+
+            # ----- Qz -----
+            tq = (Yua / 2 - sk / 2) - centroid
+            d_tq = d_Yua / 2 - dsk / 2 - d_centroid
+            d_Qz = np.sum(d_tq * sk * Xud + tq * dsk * Xud + tq * sk * d_Xud, axis=0)
+            qf = RYu[0] - sk - centroid
+            d_qf = d_RYu[0] - dsk - d_centroid
+            d_Qz = d_Qz + qf * d_qf * st + qf**2 / 2 * dst
+            qr = RYu[-1] - sk - centroid
+            d_qr = d_RYu[-1] - dsk - d_centroid
+            d_Qz = d_Qz + qr * d_qr * st + qr**2 / 2 * dst
+
+            # ----- Iy (backward bending) -----
+            sfront = RYu[0] - RYl[0]
+            d_sfront = d_RYu[0] - d_RYl[0]
+            srear = RYu[-1] - RYl[-1]
+            d_srear = d_RYu[-1] - d_RYl[-1]
+            fmaf = sfront * st * (RXu[0] + st / 2)
+            d_fmaf = d_sfront * st * (RXu[0] + st / 2) + sfront * dst * (RXu[0] + st / 2) + sfront * st * (
+                d_RXu[0] + dst / 2
+            )
+            fmar = srear * st * (RXu[-1] - st / 2)
+            d_fmar = d_srear * st * (RXu[-1] - st / 2) + srear * dst * (RXu[-1] - st / 2) + srear * st * (
+                d_RXu[-1] - dst / 2
+            )
+            denomIv = (sfront + srear) * st
+            d_denomIv = (d_sfront + d_srear) * st + (sfront + srear) * dst
+            cIv = (fmaf + fmar) / denomIv
+            d_cIv = ((d_fmaf + d_fmar) * denomIv - (fmaf + fmar) * d_denomIv) / denomIv**2
+
+            ef = cIv - (RXu[0] + st / 2)
+            d_ef = d_cIv - (d_RXu[0] + dst / 2)
+            d_Iy = 1.0 / 12.0 * (d_sfront * st**3 + sfront * 3 * st**2 * dst) + (
+                d_sfront * st + sfront * dst
+            ) * ef**2 + sfront * st * 2 * ef * d_ef
+            er = RXu[-1] - st / 2 - cIv
+            d_er = d_RXu[-1] - dst / 2 - d_cIv
+            d_Iy = d_Iy + 1.0 / 12.0 * (d_srear * st**3 + srear * 3 * st**2 * dst) + (
+                d_srear * st + srear * dst
+            ) * er**2 + srear * st * 2 * er * d_er
+            w = RXu[-1] - RXu[0] - 2 * st
+            d_w = d_RXu[-1] - d_RXu[0] - 2 * dst
+            cc = cIv - (RXu[-1] + RXu[0]) / 2
+            d_cc = d_cIv - (d_RXu[-1] + d_RXu[0]) / 2
+            d_Iy = d_Iy + 2.0 * (
+                1.0 / 12.0 * (dsk * w**3 + sk * 3 * w**2 * d_w)
+                + dsk * w * cc**2
+                + sk * d_w * cc**2
+                + sk * w * 2 * cc * d_cc
+            )
+
+            # ----- htop, hbottom (KS aggregation; max terms cancel in the derivative) -----
+            mmax = np.max(RYu, axis=0, keepdims=True)
+            eu = np.exp(ks_rho * (RYu - mmax))
+            wu = eu / np.sum(eu, axis=0, keepdims=True)
+            d_htop = np.sum(wu * d_RYu, axis=0) - d_centroid
+
+            mmaxl = np.max(-RYl, axis=0, keepdims=True)
+            el = np.exp(ks_rho * (-RYl - mmaxl))
+            wl = el / np.sum(el, axis=0, keepdims=True)
+            d_hbottom = np.sum(wl * (-d_RYl), axis=0) + d_centroid
+
+            # ----- hfront, hrear -----
+            d_hfront = d_cIv - d_RXu[0]
+            d_hrear = d_RXu[-1] - d_cIv
+
+            return {
+                "A": d_area,
+                "A_enc": d_Aenc,
+                "A_int": d_Aint,
+                "Iy": d_Iy,
+                "Qz": d_Qz,
+                "Iz": d_Iz,
+                "J": d_J,
+                "htop": d_htop,
+                "hbottom": d_hbottom,
+                "hfront": d_hfront,
+                "hrear": d_hrear,
+            }
+
+        nseg = self.ny - 1
+        one = np.ones(nseg)
+        zero = np.zeros(nseg)
+        seeds = {
+            "fem_chords": (one, zero, zero, zero, zero, zero),
+            "spar_thickness": (zero, one, zero, zero, zero, zero),
+            "skin_thickness": (zero, zero, one, zero, zero, zero),
+            "t_over_c": (zero, zero, zero, one, zero, zero),
+            "streamwise_chords": (zero, zero, zero, zero, one, zero),
+            "fem_twists": (zero, zero, zero, zero, zero, one),
+        }
+        for inp, seed in seeds.items():
+            derivs = fwd(*seed)
+            for out, dval in derivs.items():
+                partials[out, inp] = dval

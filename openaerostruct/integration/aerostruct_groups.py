@@ -3,7 +3,9 @@ from openaerostruct.geometry.geometry_group import Geometry
 from openaerostruct.geometry.utils import build_section_dicts
 from openaerostruct.geometry.geometry_unification import GeomMultiUnification
 from openaerostruct.geometry.geometry_multi_join import GeomMultiJoin
-from openaerostruct.transfer.displacement_transfer_group import DisplacementTransferGroup
+from openaerostruct.transfer.displacement_transfer_group import (
+    DisplacementTransferGroup,
+)
 from openaerostruct.structures.spatial_beam_setup import SpatialBeamSetup
 from openaerostruct.structures.spatial_beam_states import SpatialBeamStates
 from openaerostruct.aerodynamics.functionals import VLMFunctionals
@@ -89,13 +91,21 @@ class AerostructGeometry(om.Group):
                 "hfront",
                 "hrear",
             ]
-            if "skin_thickness_cp" in surface.keys() and "spar_thickness_cp" in surface.keys():
+            if (
+                "skin_thickness_cp" in surface.keys()
+                and "spar_thickness_cp" in surface.keys()
+            ):
                 wingbox_promotes_in.append("skin_thickness_cp")
                 wingbox_promotes_in.append("spar_thickness_cp")
                 wingbox_promotes_out.append("skin_thickness")
                 wingbox_promotes_out.append("spar_thickness")
-            elif "skin_thickness_cp" in surface.keys() or "spar_thickness_cp" in surface.keys():
-                raise NameError("Please have both skin and spar thickness as design variables, not one or the other.")
+            elif (
+                "skin_thickness_cp" in surface.keys()
+                or "spar_thickness_cp" in surface.keys()
+            ):
+                raise NameError(
+                    "Please have both skin and spar thickness as design variables, not one or the other."
+                )
 
             self.add_subsystem(
                 "wingbox_group",
@@ -104,9 +114,13 @@ class AerostructGeometry(om.Group):
                 promotes_outputs=wingbox_promotes_out,
             )
         else:
-            raise NameError("Please select a valid `fem_model_type` from either `tube` or `wingbox`.")
+            raise NameError(
+                "Please select a valid `fem_model_type` from either `tube` or `wingbox`."
+            )
 
-        if surface["fem_model_type"].lower() == "wingbox":  # same for both isotropic and composite wingbox
+        if (
+            surface["fem_model_type"].lower() == "wingbox"
+        ):  # same for both isotropic and composite wingbox
             promotes = ["A_int"]
         else:
             promotes = []
@@ -115,7 +129,13 @@ class AerostructGeometry(om.Group):
             "struct_setup",
             SpatialBeamSetup(surface=surface),
             promotes_inputs=["mesh", "A", "Iy", "Iz", "J"] + promotes,
-            promotes_outputs=["nodes", "local_stiff_transformed", "structural_mass", "cg_location", "element_mass"],
+            promotes_outputs=[
+                "nodes",
+                "local_stiff_transformed",
+                "structural_mass",
+                "cg_location",
+                "element_mass",
+            ],
         )
 
 
@@ -144,7 +164,9 @@ class MultiSecAerostructGeometry(om.Group):
         self.options.declare(
             "dim_constr", types=list, default=[]
         )  # List of arrays corresponding to each shared edge between section along the surface. Each array inidicates along which axes the distance constarint is applied([x y z])
-        self.options.declare("shift_uni_mesh", types=bool, default=True)  # Flag to apply mesh shifting or not
+        self.options.declare(
+            "shift_uni_mesh", types=bool, default=True
+        )  # Flag to apply mesh shifting or not
 
     def setup(self):
         surface = self.options["surface"]
@@ -173,19 +195,33 @@ class MultiSecAerostructGeometry(om.Group):
 
         promotes_outputs = [("{}_uni_mesh".format(surface["name"]), "mesh")]
         if "t_over_c_cp" in surface.keys():
-            promotes_outputs += [("{}_uni_t_over_c".format(surface["name"]), "t_over_c")]
+            promotes_outputs += [
+                ("{}_uni_t_over_c".format(surface["name"]), "t_over_c")
+            ]
 
-        uni_mesh = GeomMultiUnification(sections=sec_dicts, surface_name=surface["name"], shift_uni_mesh=shift_uni_mesh)
-        self.add_subsystem(unification_name, uni_mesh, promotes_outputs=promotes_outputs)
+        uni_mesh = GeomMultiUnification(
+            sections=sec_dicts,
+            surface_name=surface["name"],
+            shift_uni_mesh=shift_uni_mesh,
+        )
+        self.add_subsystem(
+            unification_name, uni_mesh, promotes_outputs=promotes_outputs
+        )
 
         # Connect each section mesh to mesh unification component inputs
         for sec_name in section_names:
-            self.connect("{}.mesh".format(sec_name), "{}.{}_def_mesh".format(unification_name, sec_name))
+            self.connect(
+                "{}.mesh".format(sec_name),
+                "{}.{}_def_mesh".format(unification_name, sec_name),
+            )
 
         # Connect each section t over c B-spline to t over c unification component if needed
         if "t_over_c_cp" in surface.keys():
             for sec_name in section_names:
-                self.connect("{}.t_over_c".format(sec_name), "{}.{}_t_over_c".format(unification_name, sec_name))
+                self.connect(
+                    "{}.t_over_c".format(sec_name),
+                    "{}.{}_t_over_c".format(unification_name, sec_name),
+                )
 
         if joining_comp:
             # Add section joining component to output edge distances
@@ -195,7 +231,10 @@ class MultiSecAerostructGeometry(om.Group):
             self.add_subsystem(joining_name, join)
 
             for sec_name in section_names:
-                self.connect("{}.mesh".format(sec_name), "{}.{}_join_mesh".format(joining_name, sec_name))
+                self.connect(
+                    "{}.mesh".format(sec_name),
+                    "{}.{}_join_mesh".format(joining_name, sec_name),
+                )
 
         """
         ### Structural geometry setup ###
@@ -216,14 +255,34 @@ class MultiSecAerostructGeometry(om.Group):
             )
         elif surface["fem_model_type"] == "wingbox":
             wingbox_promotes_in = ["mesh", "t_over_c"]
-            wingbox_promotes_out = ["A", "Iy", "Iz", "J", "Qz", "A_enc", "A_int", "htop", "hbottom", "hfront", "hrear"]
-            if "skin_thickness_cp" in surface.keys() and "spar_thickness_cp" in surface.keys():
+            wingbox_promotes_out = [
+                "A",
+                "Iy",
+                "Iz",
+                "J",
+                "Qz",
+                "A_enc",
+                "A_int",
+                "htop",
+                "hbottom",
+                "hfront",
+                "hrear",
+            ]
+            if (
+                "skin_thickness_cp" in surface.keys()
+                and "spar_thickness_cp" in surface.keys()
+            ):
                 wingbox_promotes_in.append("skin_thickness_cp")
                 wingbox_promotes_in.append("spar_thickness_cp")
                 wingbox_promotes_out.append("skin_thickness")
                 wingbox_promotes_out.append("spar_thickness")
-            elif "skin_thickness_cp" in surface.keys() or "spar_thickness_cp" in surface.keys():
-                raise NameError("Please have both skin and spar thickness as design variables, not one or the other.")
+            elif (
+                "skin_thickness_cp" in surface.keys()
+                or "spar_thickness_cp" in surface.keys()
+            ):
+                raise NameError(
+                    "Please have both skin and spar thickness as design variables, not one or the other."
+                )
 
             self.add_subsystem(
                 "wingbox_group",
@@ -232,7 +291,9 @@ class MultiSecAerostructGeometry(om.Group):
                 promotes_outputs=wingbox_promotes_out,
             )
         else:
-            raise NameError("Please select a valid `fem_model_type` from either `tube` or `wingbox`.")
+            raise NameError(
+                "Please select a valid `fem_model_type` from either `tube` or `wingbox`."
+            )
 
         if surface["fem_model_type"] == "wingbox":
             promotes = ["A_int"]
@@ -243,7 +304,13 @@ class MultiSecAerostructGeometry(om.Group):
             "struct_setup",
             SpatialBeamSetup(surface=surface),
             promotes_inputs=["mesh", "A", "Iy", "Iz", "J"] + promotes,
-            promotes_outputs=["nodes", "local_stiff_transformed", "structural_mass", "cg_location", "element_mass"],
+            promotes_outputs=[
+                "nodes",
+                "local_stiff_transformed",
+                "structural_mass",
+                "cg_location",
+                "element_mass",
+            ],
         )
 
 
@@ -261,13 +328,22 @@ class CoupledAS(om.Group):
             promotes = promotes + list(set(["nodes", "load_factor"]))
         if "n_point_masses" in surface.keys():
             promotes = promotes + list(
-                set(["point_mass_locations", "point_masses", "nodes", "load_factor", "engine_thrusts"])
+                set(
+                    [
+                        "point_mass_locations",
+                        "point_masses",
+                        "nodes",
+                        "load_factor",
+                        "engine_thrusts",
+                    ]
+                )
             )
 
         self.add_subsystem(
             "struct_states",
             SpatialBeamStates(surface=surface),
-            promotes_inputs=["local_stiff_transformed", "forces", "loads"] + promotes,
+            promotes_inputs=["local_stiff_transformed", "forces", "loads"]
+            + list(set(promotes)),
             promotes_outputs=["disp"],
         )
 
@@ -282,7 +358,15 @@ class CoupledAS(om.Group):
             "aero_geom",
             VLMGeometry(surface=surface),
             promotes_inputs=["def_mesh"],
-            promotes_outputs=["b_pts", "widths", "lengths_spanwise", "lengths", "chords", "normals", "S_ref"],
+            promotes_outputs=[
+                "b_pts",
+                "widths",
+                "lengths_spanwise",
+                "lengths",
+                "chords",
+                "normals",
+                "S_ref",
+            ],
         )
 
         self.linear_solver = om.LinearRunOnce()
@@ -324,7 +408,9 @@ class CoupledPerformance(om.Group):
             )
 
         elif surface["fem_model_type"].lower() == "wingbox":
-            if "useComposite" in surface.keys() and surface["useComposite"]:  # using the Composite Wing Box
+            if (
+                "useComposite" in surface.keys() and surface["useComposite"]
+            ):  # using the Composite Wing Box
                 promotedoutput = "tsaiwu_sr"
             else:  # using the isotropic Wing Box
                 promotedoutput = "vonmises"
@@ -347,7 +433,9 @@ class CoupledPerformance(om.Group):
                 promotes_outputs=[promotedoutput, "failure"],
             )
         else:
-            raise NameError("Please select a valid `fem_model_type` from either `tube` or `wingbox`.")
+            raise NameError(
+                "Please select a valid `fem_model_type` from either `tube` or `wingbox`."
+            )
 
 
 class AerostructPoint(om.Group):
@@ -362,7 +450,10 @@ class AerostructPoint(om.Group):
             desc="Turns on compressibility correction for moderate Mach number flows. Defaults to False.",
         )
         self.options.declare(
-            "rotational", False, types=bool, desc="Set to True to turn on support for computing angular velocities"
+            "rotational",
+            False,
+            types=bool,
+            desc="Set to True to turn on support for computing angular velocities",
         )
 
     def setup(self):
@@ -442,16 +533,26 @@ class AerostructPoint(om.Group):
 
             # Connect the results from 'coupled' to the performance groups
             coupled.connect(name + ".def_mesh", name + "_loads.def_mesh")
-            coupled.connect("aero_states." + name + "_sec_forces", name + "_loads.sec_forces")
+            coupled.connect(
+                "aero_states." + name + "_sec_forces", name + "_loads.sec_forces"
+            )
 
             # Connect the results from 'aero_states' to the performance groups
-            self.connect("coupled.aero_states." + name + "_sec_forces", name + "_perf" + ".sec_forces")
+            self.connect(
+                "coupled.aero_states." + name + "_sec_forces",
+                name + "_perf" + ".sec_forces",
+            )
 
             # Connection performance functional variables
             self.connect(name + "_perf.CL", "total_perf." + name + "_CL")
             self.connect(name + "_perf.CD", "total_perf." + name + "_CD")
-            self.connect("coupled.aero_states." + name + "_sec_forces", "total_perf." + name + "_sec_forces")
-            self.connect("coupled." + name + ".chords", name + "_perf.aero_funcs.chords")
+            self.connect(
+                "coupled.aero_states." + name + "_sec_forces",
+                "total_perf." + name + "_sec_forces",
+            )
+            self.connect(
+                "coupled." + name + ".chords", name + "_perf.aero_funcs.chords"
+            )
 
             # Connect parameters from the 'coupled' group to the performance
             # groups for the individual surfaces.
@@ -460,12 +561,18 @@ class AerostructPoint(om.Group):
             self.connect("coupled." + name + ".widths", name + "_perf.widths")
             # self.connect('coupled.' + name + '.chords', name + '_perf.chords')
             self.connect("coupled." + name + ".lengths", name + "_perf.lengths")
-            self.connect("coupled." + name + ".lengths_spanwise", name + "_perf.lengths_spanwise")
+            self.connect(
+                "coupled." + name + ".lengths_spanwise", name + "_perf.lengths_spanwise"
+            )
 
             # Connect parameters from the 'coupled' group to the total performance group.
             self.connect("coupled." + name + ".S_ref", "total_perf." + name + "_S_ref")
-            self.connect("coupled." + name + ".widths", "total_perf." + name + "_widths")
-            self.connect("coupled." + name + ".chords", "total_perf." + name + "_chords")
+            self.connect(
+                "coupled." + name + ".widths", "total_perf." + name + "_widths"
+            )
+            self.connect(
+                "coupled." + name + ".chords", "total_perf." + name + "_chords"
+            )
             self.connect("coupled." + name + ".b_pts", "total_perf." + name + "_b_pts")
 
             # Add components to the 'coupled' group for each surface.
@@ -491,7 +598,9 @@ class AerostructPoint(om.Group):
                 ground_effect = True
 
         if self.options["compressible"] is True:
-            aero_states = CompressibleVLMStates(surfaces=surfaces, rotational=rotational)
+            aero_states = CompressibleVLMStates(
+                surfaces=surfaces, rotational=rotational
+            )
             prom_in = ["v", "alpha", "beta", "rho", "Mach_number"]
         else:
             aero_states = VLMStates(surfaces=surfaces, rotational=rotational)
@@ -559,7 +668,9 @@ class AerostructPoint(om.Group):
             perf_group = CoupledPerformance(surface=surface)
 
             self.add_subsystem(
-                name + "_perf", perf_group, promotes_inputs=["rho", "v", "alpha", "beta", "re", "Mach_number"]
+                name + "_perf",
+                perf_group,
+                promotes_inputs=["rho", "v", "alpha", "beta", "re", "Mach_number"],
             )
 
         # Add functionals to evaluate performance of the system.
